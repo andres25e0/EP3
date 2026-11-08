@@ -3,12 +3,23 @@ package com.example.ep3.network
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
-import org.json.JSONException
-import org.json.JSONObject
+import com.google.gson.Gson
+import com.google.gson.JsonParseException
+import com.google.gson.stream.MalformedJsonException
+import com.example.ep3.modelo.OpenAIRequest
+import com.example.ep3.modelo.OpenAIReasoning
+import com.example.ep3.modelo.OpenAIResponse
+import com.example.ep3.modelo.OpenAIError
+import okhttp3.OkHttpClient
+import retrofit2.Retrofit
+import retrofit2.converter.gson.GsonConverterFactory
+import java.util.concurrent.TimeUnit
+import java.io.EOFException
+
 import java.io.IOException
-import java.net.HttpURLConnection
+
 import java.net.SocketTimeoutException
-import java.net.URL
+
 import java.net.UnknownHostException
 import kotlin.coroutines.coroutineContext
 
@@ -16,36 +27,36 @@ sealed interface ResultadoIA {
     data class Exito(val texto: String, val responseId: String) : ResultadoIA
     data class Error(val mensaje: String, val http: Int? = null, val codigo: String = "") : ResultadoIA
 }
-class OpenAIAPI(private val apiKey: String) {
+class OpenAIAPI(private val apiKey: String, private val service: OpenAIService = crearServicio()) {
     suspend fun consultar(prompt: String): ResultadoIA = withContext(Dispatchers.IO) {
         if (apiKey.isBlank() || apiKey.startsWith("key_") || apiKey == "TU_API_KEY_AQUI") {
             return@withContext ResultadoIA.Error("Configura la clave secreta OPENAI_API_KEY en local.properties y recompila. El Tracking ID no es una clave secreta.")
         }
-        var connection: HttpURLConnection? = null
+
         try {
             coroutineContext.ensureActive()
-            connection = URL(ENDPOINT).openConnection() as HttpURLConnection
-            connection.requestMethod = "POST"
-            connection.instanceFollowRedirects = false
-            connection.connectTimeout = 15000
-            connection.readTimeout = 60000
-            connection.setRequestProperty("Authorization", "Bearer ${apiKey.trim()}")
-            connection.setRequestProperty("Content-Type", "application/json")
-            connection.doOutput = true
-            connection.outputStream.use { it.write(crearSolicitud(prompt).toString().toByteArray(Charsets.UTF_8)) }
-            val status = connection.responseCode
-            val stream = if (status in 200..299) connection.inputStream else connection.errorStream
-            val body = stream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }.orEmpty()
+            val response = service.crearRespuesta("Bearer ${apiKey.trim()}", crearSolicitud(prompt))
             coroutineContext.ensureActive()
-            procesarRespuesta(status, body)
+            if (response.isSuccessful) {
+                procesarRespuesta(response.code(), response.body())
+            } else {
+                val body = response.errorBody()?.use { it.string() }.orEmpty()
+                val error = try { gson.fromJson(body, OpenAIResponse::class.java)?.error }
+                    catch (_: JsonParseException) { null }
+                errorHttp(response.code(), error)
+            }
+        } catch (_: JsonParseException) {
+            jsonInvalido()
+        } catch (_: MalformedJsonException) {
+            jsonInvalido()
+        } catch (_: EOFException) {
+            jsonInvalido()
         } catch (_: SocketTimeoutException) {
             ResultadoIA.Error("Se agotó el tiempo de espera. Intenta de nuevo más tarde.")
         } catch (_: UnknownHostException) {
             ResultadoIA.Error("No se pudo encontrar OpenAI. Comprueba tu conexión a Internet.")
         } catch (_: IOException) {
             ResultadoIA.Error("No se pudo conectar con OpenAI. Revisa Internet e inténtalo de nuevo.")
-        } finally {
-            connection?.disconnect()
         }
     }
 
@@ -53,49 +64,63 @@ class OpenAIAPI(private val apiKey: String) {
         const val ENDPOINT = "https://api.openai.com/v1/responses"
         const val MODEL = "gpt-6-luna"
 
-        fun crearSolicitud(prompt: String): JSONObject = JSONObject()
-            .put("model", MODEL)
-            .put("instructions", "Eres el asistente escolar de TuStudio. Responde en español, con claridad y extensión moderada, como máximo 350 palabras. Usa texto sencillo.")
-            .put("input", prompt)
-            .put("reasoning", JSONObject().put("effort", "none"))
-            .put("max_output_tokens", 1200)
-            .put("store", false)
+        private val gson = Gson()
 
-        fun procesarRespuesta(http: Int, body: String): ResultadoIA {
-            val json = try { JSONObject(body) } catch (_: JSONException) {
-                return if (http !in 200..299) errorHttp(http, null)
-                else ResultadoIA.Error("OpenAI devolvió JSON inválido.", http, "invalid_json")
-            }
-            val error = json.optJSONObject("error")
-            if (http !in 200..299 || error != null) return errorHttp(http, error)
-            if (json.optString("status") != "completed") {
+        fun crearServicio(baseUrl: String = "https://api.openai.com/v1/"): OpenAIService {
+            val client = OkHttpClient.Builder()
+                .connectTimeout(15, TimeUnit.SECONDS)
+                .readTimeout(60, TimeUnit.SECONDS)
+                .writeTimeout(60, TimeUnit.SECONDS)
+                .followRedirects(false)
+                .followSslRedirects(false)
+                .retryOnConnectionFailure(false)
+                .build()
+            return Retrofit.Builder()
+                .baseUrl(baseUrl)
+                .client(client)
+                .addConverterFactory(GsonConverterFactory.create(gson))
+                .build()
+                .create(OpenAIService::class.java)
+        }
+
+        fun crearSolicitud(prompt: String) = OpenAIRequest(
+            model = MODEL,
+            instructions = "Eres el asistente escolar de TuStudio. Responde en español, con claridad y extensión moderada, como máximo 350 palabras. Usa texto sencillo.",
+            input = prompt,
+            reasoning = OpenAIReasoning("none"),
+            maxOutputTokens = 1200,
+            store = false
+        )
+
+        private fun jsonInvalido() = ResultadoIA.Error("OpenAI devolvió JSON inválido.", 200, "invalid_json")
+
+        fun procesarRespuesta(http: Int, response: OpenAIResponse?): ResultadoIA {
+            if (http !in 200..299 || response?.error != null) return errorHttp(http, response?.error)
+            if (response == null) return ResultadoIA.Error("OpenAI respondió sin texto útil.", http, "empty_output")
+            if (response.status != "completed") {
                 return ResultadoIA.Error("La respuesta de OpenAI no se completó. Intenta con un tema más breve.", http, "incomplete_response")
             }
             val texts = mutableListOf<String>()
-            val output = json.optJSONArray("output")
-            if (output != null) for (i in 0 until output.length()) {
-                val item = output.optJSONObject(i) ?: continue
-                if (item.optString("type") != "message" || item.optString("role") != "assistant") continue
-                if (item.optString("status", "completed") != "completed")
+            for (item in response.output.orEmpty()) {
+                if (item?.type != "message" || item.role != "assistant") continue
+                if (item.status != null && item.status != "completed")
                     return ResultadoIA.Error("El mensaje recibido está incompleto.", http, "incomplete_message")
-                val content = item.optJSONArray("content") ?: continue
-                for (j in 0 until content.length()) {
-                    val block = content.optJSONObject(j) ?: continue
-                    if (block.optString("type") == "refusal")
+                for (block in item.content.orEmpty()) {
+                    if (block?.type == "refusal")
                         return ResultadoIA.Error("OpenAI no pudo responder a esta solicitud. Reformula el tema.", http, "refusal")
-                    if (block.optString("type") == "output_text") {
-                        (block.opt("text") as? String)?.trim()?.takeIf { it.isNotEmpty() }?.let(texts::add)
+                    if (block?.type == "output_text") {
+                        block.text?.trim()?.takeIf { it.isNotEmpty() }?.let(texts::add)
                     }
                 }
             }
             if (texts.isEmpty()) return ResultadoIA.Error("OpenAI respondió sin texto útil.", http, "empty_output")
-            return ResultadoIA.Exito(texts.joinToString("\n\n"), json.optString("id"))
+            return ResultadoIA.Exito(texts.joinToString("\n\n"), response.id.orEmpty())
         }
 
-        private fun errorHttp(http: Int, error: JSONObject?): ResultadoIA.Error {
-            val code = error?.optString("code").orEmpty()
-            val type = error?.optString("type").orEmpty()
-            val message = error?.optString("message").orEmpty().lowercase()
+        private fun errorHttp(http: Int, error: OpenAIError?): ResultadoIA.Error {
+            val code = error?.code.orEmpty()
+            val type = error?.type.orEmpty()
+            val message = error?.message.orEmpty().lowercase()
             val quota = code == "insufficient_quota" || type == "insufficient_quota" ||
                 code == "billing_hard_limit_reached" || message.contains("current quota") ||
                 message.contains("billing") || message.contains("credit balance")

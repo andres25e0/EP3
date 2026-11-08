@@ -52,6 +52,11 @@ android {
 }
 
 dependencies {
+    implementation(libs.retrofit)
+    implementation(libs.retrofit.gson)
+    implementation(libs.glide)
+    testImplementation(libs.junit)
+    testImplementation(libs.mockwebserver)
     implementation(libs.androidx.activity.ktx)
     implementation(libs.androidx.appcompat)
     implementation(libs.androidx.constraintlayout)
