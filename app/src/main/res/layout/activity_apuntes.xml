@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:padding="16dp">
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Asistente IA"
+        android:textSize="22sp"
+        android:textStyle="bold"
+        android:layout_gravity="center"
+        android:layout_marginBottom="16dp"/>
+
+    <EditText
+        android:id="@+id/etApunte"
+        android:layout_width="match_parent"
+        android:layout_height="150dp"
+        android:hint="Escribe o pega aquí el tema o apunte..."
+        android:gravity="top|start"
+        android:inputType="textMultiLine"
+        android:maxLength="12000"
+        android:background="@android:drawable/editbox_background_normal"
+        android:padding="8dp"/>
+
+    
+    <Button
+        android:id="@+id/btnResumen"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Consulta 1: Generar Resumen"
+        android:layout_marginTop="16dp"/>
+
+    <Button
+        android:id="@+id/btnPreguntas"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Consulta 2: Generar Preguntas"
+        android:layout_marginTop="8dp"/>
+
+    <Button
+        android:id="@+id/btnConceptos"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Consulta 3: Conceptos Clave"
+        android:layout_marginTop="8dp"/>
+
+    <ProgressBar
+        android:id="@+id/progressBar"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center"
+        android:visibility="gone"
+        android:layout_marginTop="16dp"/>
+
+</LinearLayout>
